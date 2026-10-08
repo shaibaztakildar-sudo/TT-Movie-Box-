@@ -12,12 +12,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,14 +31,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ClosedCaption
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -67,14 +70,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -105,8 +112,21 @@ fun VideoPlayerScreen(
     var areControlsVisible by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+
+    // User dragging / scrub state for seek bar
+    var isDraggingSeek by remember { mutableStateOf(false) }
+    var dragSeekPosition by remember { mutableLongStateOf(0L) }
+
+    // Double-tap visual indicator state
+    var doubleTapFeedback by remember { mutableStateOf<String?>(null) } // "LEFT" or "RIGHT"
+    var feedbackTriggerCount by remember { mutableLongStateOf(0L) }
+
+    // Dialog states
     var showQualityDialog by remember { mutableStateOf(false) }
     var selectedQuality by remember { mutableStateOf("1080p Full HD (Auto)") }
+    var showSpeedDialog by remember { mutableStateOf(false) }
+    var selectedSpeed by remember { mutableFloatStateOf(1.0f) }
+
     var isMuted by remember { mutableStateOf(false) }
     var isSubtitlesEnabled by remember { mutableStateOf(args.subtitleUri.isNotBlank()) }
     var showNextEpisodePrompt by remember { mutableStateOf(false) }
@@ -115,6 +135,40 @@ fun VideoPlayerScreen(
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
+        }
+    }
+
+    // Helper: Seek forward 10s
+    fun seekForward10() {
+        val rawDur = exoPlayer.duration
+        val totalDur = if (rawDur > 0 && rawDur != C.TIME_UNSET) rawDur else duration
+        val cur = exoPlayer.currentPosition
+        val target = if (totalDur > 0) (cur + 10000L).coerceAtMost(totalDur) else cur + 10000L
+        exoPlayer.seekTo(target)
+        currentPosition = target
+        doubleTapFeedback = "RIGHT"
+        feedbackTriggerCount++
+        viewModel.saveWatchProgress(args, target, totalDur)
+    }
+
+    // Helper: Seek backward 10s
+    fun seekBackward10() {
+        val rawDur = exoPlayer.duration
+        val totalDur = if (rawDur > 0 && rawDur != C.TIME_UNSET) rawDur else duration
+        val cur = exoPlayer.currentPosition
+        val target = (cur - 10000L).coerceAtLeast(0L)
+        exoPlayer.seekTo(target)
+        currentPosition = target
+        doubleTapFeedback = "LEFT"
+        feedbackTriggerCount++
+        viewModel.saveWatchProgress(args, target, totalDur)
+    }
+
+    // Hide double-tap indicator after 800ms
+    LaunchedEffect(feedbackTriggerCount) {
+        if (doubleTapFeedback != null) {
+            delay(800)
+            doubleTapFeedback = null
         }
     }
 
@@ -130,6 +184,7 @@ fun VideoPlayerScreen(
             exoPlayer.prepare()
             if (args.initialPositionMs > 0) {
                 exoPlayer.seekTo(args.initialPositionMs)
+                currentPosition = args.initialPositionMs
             }
         } catch (e: Exception) {
             playbackError = "Failed to load video: ${e.localizedMessage}"
@@ -142,11 +197,21 @@ fun VideoPlayerScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
-                    duration = exoPlayer.duration.coerceAtLeast(0L)
+                    val d = exoPlayer.duration
+                    if (d > 0 && d != C.TIME_UNSET) {
+                        duration = d
+                    }
                 } else if (playbackState == Player.STATE_ENDED) {
                     if (args.nextEpisodeId > 0) {
                         showNextEpisodePrompt = true
                     }
+                }
+            }
+
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                val d = exoPlayer.duration
+                if (d > 0 && d != C.TIME_UNSET) {
+                    duration = d
                 }
             }
 
@@ -168,28 +233,34 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Periodic progress tracker & autosave
+    // Periodic progress tracker & autosave (only updates UI position when user is NOT dragging slider)
     LaunchedEffect(isPlaying) {
         while (true) {
             if (exoPlayer.isPlaying) {
-                currentPosition = exoPlayer.currentPosition
-                duration = exoPlayer.duration.coerceAtLeast(0L)
-                viewModel.saveWatchProgress(args, currentPosition, duration)
+                val p = exoPlayer.currentPosition
+                val d = exoPlayer.duration
+                if (d > 0 && d != C.TIME_UNSET && d != duration) {
+                    duration = d
+                }
+                if (!isDraggingSeek) {
+                    currentPosition = p
+                }
+                viewModel.saveWatchProgress(args, p, if (duration > 0) duration else d)
             }
-            delay(1000)
+            delay(500)
         }
     }
 
-    // Auto-hide controls
-    LaunchedEffect(areControlsVisible, isPlaying) {
-        if (areControlsVisible && isPlaying) {
+    // Auto-hide controls after inactivity (paused or dragging prevents auto-hide)
+    LaunchedEffect(areControlsVisible, isPlaying, isDraggingSeek) {
+        if (areControlsVisible && isPlaying && !isDraggingSeek) {
             delay(4000)
             areControlsVisible = false
         }
     }
 
     fun handleBack() {
-        viewModel.saveWatchProgress(args, currentPosition, duration)
+        viewModel.saveWatchProgress(args, exoPlayer.currentPosition, duration)
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         viewModel.navigateBack()
     }
@@ -202,11 +273,20 @@ fun VideoPlayerScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                areControlsVisible = !areControlsVisible
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        areControlsVisible = !areControlsVisible
+                    },
+                    onDoubleTap = { offset ->
+                        // Left half of screen double-tap: -10s, Right half: +10s
+                        if (offset.x < size.width / 2f) {
+                            seekBackward10()
+                        } else {
+                            seekForward10()
+                        }
+                    }
+                )
             }
     ) {
         // AndroidView rendering Media3 PlayerView
@@ -235,6 +315,82 @@ fun VideoPlayerScreen(
             )
         }
 
+        // Temporary Double-Tap Visual Indicator Overlay
+        AnimatedVisibility(
+            visible = doubleTapFeedback != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (doubleTapFeedback == "LEFT") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(0.5f)
+                            .align(Alignment.CenterStart)
+                            .background(Color.White.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Replay10,
+                                contentDescription = "Rewind 10s",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "↶ 10 seconds",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else if (doubleTapFeedback == "RIGHT") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(0.5f)
+                            .align(Alignment.CenterEnd)
+                            .background(Color.White.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Forward10,
+                                contentDescription = "Forward 10s",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "10 seconds ↷",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Playback Error Banner
         if (playbackError != null) {
             Box(
@@ -258,7 +414,7 @@ fun VideoPlayerScreen(
                         text = playbackError ?: "Unknown error",
                         fontSize = 13.sp,
                         color = TextSecondary,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
@@ -284,7 +440,7 @@ fun VideoPlayerScreen(
                     .background(
                         Brush.verticalGradient(
                             listOf(
-                                Color.Black.copy(alpha = 0.75f),
+                                Color.Black.copy(alpha = 0.8f),
                                 Color.Transparent,
                                 Color.Black.copy(alpha = 0.85f)
                             )
@@ -295,7 +451,7 @@ fun VideoPlayerScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 24.dp)
+                        .padding(horizontal = 16.dp, vertical = 20.dp)
                         .align(Alignment.TopCenter),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -310,7 +466,7 @@ fun VideoPlayerScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -330,6 +486,18 @@ fun VideoPlayerScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+
+                    // Playback Speed Button
+                    IconButton(
+                        onClick = { showSpeedDialog = true },
+                        modifier = Modifier.testTag("player_speed_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Speed,
+                            contentDescription = "Playback Speed",
+                            tint = if (selectedSpeed != 1.0f) CinemaGold else Color.White
+                        )
                     }
 
                     // Quality Picker Button
@@ -371,34 +539,50 @@ fun VideoPlayerScreen(
                     }
                 }
 
-                // Center Controls: Rewind 10s, Play/Pause, Forward 10s
+                // Center Controls: Rewind -10s, Play/Pause, Forward +10s
                 Row(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(36.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
-                        onClick = {
-                            exoPlayer.seekTo((exoPlayer.currentPosition - 10000).coerceAtLeast(0))
-                        },
+                    // Rewind 10s Button
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .size(48.dp)
                             .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.2f))
+                            .clickable { seekBackward10() }
+                            .padding(8.dp)
+                            .testTag("player_rewind_10_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.FastRewind,
-                            contentDescription = "Rewind 10s",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Replay10,
+                                contentDescription = "Rewind 10 Seconds",
+                                tint = Color.White,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "-10s",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
 
+                    // Big Play / Pause Button
                     Box(
                         modifier = Modifier
-                            .size(64.dp)
+                            .size(68.dp)
                             .clip(CircleShape)
                             .background(CinemaRed)
                             .clickable {
@@ -411,36 +595,51 @@ fun VideoPlayerScreen(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (isPlaying) "Pause" else "Play",
                             tint = Color.White,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(40.dp)
                         )
                     }
 
-                    IconButton(
-                        onClick = {
-                            exoPlayer.seekTo((exoPlayer.currentPosition + 10000).coerceAtMost(exoPlayer.duration))
-                        },
+                    // Forward 10s Button
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .size(48.dp)
                             .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.2f))
+                            .clickable { seekForward10() }
+                            .padding(8.dp)
+                            .testTag("player_forward_10_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.FastForward,
-                            contentDescription = "Forward 10s",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Forward10,
+                                contentDescription = "Forward 10 Seconds",
+                                tint = Color.White,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "+10s",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }
 
-                // Bottom Bar: Times, Slider & Fullscreen Toggle
+                // Bottom Bar: Time Stamps, Functional Seek/Progress Bar & Fullscreen Toggle
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 20.dp)
+                        .padding(horizontal = 16.dp, vertical = 16.dp)
                         .align(Alignment.BottomCenter)
                 ) {
-                    // Copyright notice
+                    // Copyright stream note
                     Text(
                         text = "TT Movie Box • Free Legal Streaming • Unauthorized distribution prohibited",
                         fontSize = 10.sp,
@@ -448,42 +647,57 @@ fun VideoPlayerScreen(
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
+                    // Progress bar row: 00:15 ━━━━━━━━━━━━━ 01:45
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val displayPos = if (isDraggingSeek) dragSeekPosition else currentPosition
                         Text(
-                            text = formatTime(currentPosition),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
+                            text = formatTime(displayPos),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
 
+                        val maxRange = if (duration > 0) duration.toFloat() else 1f
+                        val sliderVal = if (duration > 0) {
+                            displayPos.toFloat().coerceIn(0f, maxRange)
+                        } else 0f
+
                         Slider(
-                            value = if (duration > 0) currentPosition.toFloat() else 0f,
+                            value = sliderVal,
                             onValueChange = { newPos ->
-                                currentPosition = newPos.toLong()
-                                exoPlayer.seekTo(newPos.toLong())
+                                isDraggingSeek = true
+                                val clamped = newPos.toLong().coerceIn(0L, duration.coerceAtLeast(0L))
+                                dragSeekPosition = clamped
                             },
-                            valueRange = 0f..(if (duration > 0) duration.toFloat() else 1f),
+                            onValueChangeFinished = {
+                                val target = dragSeekPosition.coerceIn(0L, duration.coerceAtLeast(0L))
+                                exoPlayer.seekTo(target)
+                                currentPosition = target
+                                isDraggingSeek = false
+                                viewModel.saveWatchProgress(args, target, duration)
+                            },
+                            valueRange = 0f..maxRange,
                             colors = SliderDefaults.colors(
                                 thumbColor = CinemaRed,
                                 activeTrackColor = CinemaRed,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                inactiveTrackColor = Color.White.copy(alpha = 0.35f)
                             ),
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 8.dp)
+                                .padding(horizontal = 10.dp)
                                 .testTag("player_seek_bar")
                         )
 
                         Text(
                             text = formatTime(duration),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color.White
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White.copy(alpha = 0.85f)
                         )
 
                         Spacer(modifier = Modifier.width(8.dp))
@@ -511,7 +725,7 @@ fun VideoPlayerScreen(
             }
         }
 
-        // Next Episode Prompt Dialog / Banner
+        // Next Episode Prompt Dialog
         if (showNextEpisodePrompt && args.nextEpisodeId > 0) {
             Box(
                 modifier = Modifier
@@ -522,7 +736,7 @@ fun VideoPlayerScreen(
                 Card(
                     modifier = Modifier.padding(24.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = DarkCardBg)
+                    colors = CardDefaults.cardColors(containerColor = DarkCardBg)
                 ) {
                     Column(
                         modifier = Modifier.padding(20.dp),
@@ -561,6 +775,56 @@ fun VideoPlayerScreen(
                     }
                 }
             }
+        }
+
+        // Playback Speed Dialog
+        if (showSpeedDialog) {
+            AlertDialog(
+                onDismissRequest = { showSpeedDialog = false },
+                title = { Text("Playback Speed", color = TextPrimary) },
+                text = {
+                    Column {
+                        listOf(
+                            0.5f to "0.5x Slow",
+                            0.75f to "0.75x",
+                            1.0f to "1.0x Normal",
+                            1.25f to "1.25x",
+                            1.5f to "1.5x Fast",
+                            2.0f to "2.0x Very Fast"
+                        ).forEach { (speed, label) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedSpeed = speed
+                                        exoPlayer.playbackParameters = PlaybackParameters(speed)
+                                        showSpeedDialog = false
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedSpeed == speed,
+                                    onClick = {
+                                        selectedSpeed = speed
+                                        exoPlayer.playbackParameters = PlaybackParameters(speed)
+                                        showSpeedDialog = false
+                                    },
+                                    colors = RadioButtonDefaults.colors(selectedColor = CinemaRed)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(text = label, color = TextPrimary, fontSize = 14.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showSpeedDialog = false }) {
+                        Text("Close", color = CinemaRed)
+                    }
+                },
+                containerColor = DarkCardBg
+            )
         }
 
         // Quality Selection Dialog
@@ -612,6 +876,7 @@ fun VideoPlayerScreen(
 }
 
 private fun formatTime(millis: Long): String {
+    if (millis <= 0) return "00:00"
     val totalSeconds = (millis / 1000).coerceAtLeast(0)
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
