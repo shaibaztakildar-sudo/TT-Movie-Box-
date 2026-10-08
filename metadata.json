@@ -1,0 +1,6 @@
+{
+  "name": "TT Movie Box",
+  "description": "Production-ready movie and web-series streaming application with OTT streaming interface and secure admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

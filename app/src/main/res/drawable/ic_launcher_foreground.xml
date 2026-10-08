@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Movie clapper / TV frame box centered (28 to 80) -->
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M30,30 L78,30 C82,30 85,33 85,37 L85,73 C85,77 82,80 78,80 L30,80 C26,80 23,77 23,73 L23,37 C23,33 26,30 30,30 Z" />
+    <!-- Screen inner dark cutout -->
+    <path
+        android:fillColor="#15151C"
+        android:pathData="M33,36 L75,36 C77,36 78,37 78,39 L78,71 C78,73 77,74 75,74 L33,74 C31,74 30,73 30,71 L30,39 C30,37 31,36 33,36 Z" />
+    <!-- Film reel perforations top header -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,32 L38,32 L38,34 L34,34 Z M42,32 L46,32 L46,34 L42,34 Z M50,32 L54,32 L54,34 L50,34 Z M58,32 L62,32 L62,34 L58,34 Z M66,32 L70,32 L70,34 L66,34 Z M74,32 L78,32 L78,34 L74,34 Z" />
+    <!-- Play Triangle in vibrant gold/white -->
+    <path
+        android:fillColor="#FFC107"
+        android:pathData="M48,46 L65,55 L48,64 Z" />
+</vector>
